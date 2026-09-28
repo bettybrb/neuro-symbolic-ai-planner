@@ -1,8 +1,4 @@
-"""
-CIFAR-100 PDDL Planner - SUBOPTIMAL BFS VERSION
-==========================================================
-Breadth-First Search planner for CIFAR-100 domain.
-"""
+"""PDDL-style state representation, action grounding, BFS and A* symbolic planning."""
 
 import re
 import tempfile
@@ -41,10 +37,10 @@ STATIC_PRED_NAMES = {'is-tool', 'is-surface'}
 class Predicate:
     name: str
     args: Tuple[str, ...]
-    
+
     def __str__(self) -> str:
         return f"({self.name} {' '.join(self.args)})" if self.args else f"({self.name})"
-    
+
     @staticmethod
     def from_string(s: str) -> 'Predicate':
         parts = s.strip().strip('()').split()
@@ -61,14 +57,14 @@ class Action:
 
     def __str__(self) -> str:
         return f"({self.name} {' '.join(self.parameters)})"
-    
+
     def instantiate(self, bindings: Dict[str, str]) -> 'Action':
         """
         Creates a concrete Action instance by replacing variables with objects.
         bindings example: {'?x': 'apple', '?loc': 'lab'}
         """
         # Helper lambda to substitute args in a single predicate
-        
+
         def substitute_pred(pred: Predicate) -> Predicate:
             return Predicate(pred.name, tuple(bindings.get(arg, arg) for arg in pred.args))
 
@@ -82,13 +78,12 @@ class Action:
 @dataclass(frozen=True)
 class State:
     predicates: FrozenSet[Predicate]
-    
+
     def apply_action(self, action: Action) -> 'State':
         """
         Returns a NEW State by applying the action's effects.
         Recall: Next State = (Current State - Del Effects) + Add Effects
         """
-        # TODO: Implement this method
         new_preds = set(self.predicates)
         new_preds.difference_update(action.del_effects)
         new_preds.update(action.add_effects)
@@ -99,9 +94,8 @@ class State:
         Checks if an action can be applied to this state.
         Recall: All preconditions must exist in the current state.
         """
-        # TODO: Implement this method
         return action.preconditions.issubset(self.predicates)
-        
+
     def satisfies(self, goal: FrozenSet[Predicate]) -> bool:
         return goal.issubset(self.predicates)
 
@@ -113,7 +107,7 @@ class SearchNode:
     action: Optional[Action] = field(compare=False)
     parent: Optional['SearchNode'] = field(compare=False)
     g_score: int = field(compare=False)
-    
+
     def get_plan(self) -> List[Action]:
         plan, node = [], self
         while node.parent:
@@ -125,7 +119,7 @@ class SearchNode:
 
 class PDDLParser:
     last_discarded = set()
-    
+
     @staticmethod
     def _extract_predicates(block: str) -> Set[Predicate]:
         """Extract predicates from a block, handling 'and' wrappers and nested parens."""
@@ -141,7 +135,7 @@ class PDDLParser:
                         block = block[4:i].strip()
                         break
                 i += 1
-        
+
         preds, depth, curr = set(), 0, []
         for c in block:
             if c == '(':
@@ -161,14 +155,14 @@ class PDDLParser:
             elif depth > 0:
                 curr.append(c)
         return preds
-    
+
     @staticmethod
     def _parse_effects(body: str) -> Tuple[Set[Predicate], Set[Predicate]]:
         """Parse add and delete effects from action body."""
         m = re.search(r':effect\s*(\(.*)', body, re.DOTALL | re.IGNORECASE)
         if not m:
             return set(), set()
-        
+
         effect_block = m.group(1).strip()
         depth, i = 0, 0
         while i < len(effect_block):
@@ -180,10 +174,10 @@ class PDDLParser:
                     effect_block = effect_block[:i+1]
                     break
             i += 1
-        
+
         block = effect_block[4:].strip().rstrip(')') if effect_block.startswith('(and') else effect_block
         adds, dels, depth, curr = set(), set(), 0, []
-        
+
         for c in block:
             if c == '(':
                 depth += 1
@@ -208,9 +202,9 @@ class PDDLParser:
                     curr = []
             elif depth > 0:
                 curr.append(c)
-        
+
         return adds, dels
-    
+
     @staticmethod
     def parse_domain(path: str) -> Dict[str, Action]:
         """Parse domain file and return action schemas."""
@@ -218,34 +212,34 @@ class PDDLParser:
             content = f.read()
         content = content.replace("\\n", "\n")
         content = re.sub(r';.*$', '', content, flags=re.MULTILINE)
-        
+
         actions = {}
         for m in re.finditer(r'\(\s*:action\s+([^\s()]+)(.*?)(?=\(\s*:action|\Z)', content, re.DOTALL | re.IGNORECASE):
             name, body = m.groups()
             name = name.strip()
-            
+
             params = []
             if params_match := re.search(r':parameters\s*\((.*?)\)', body, re.DOTALL | re.IGNORECASE):
                 params = re.findall(r'\?[\w-]+', params_match.group(1))
-            
+
             preconds = set()
             if precond_match := re.search(r':precondition\s*(\(.*?)(?=\s*:effect|\Z)', body, re.DOTALL | re.IGNORECASE):
                 preconds = PDDLParser._extract_predicates(precond_match.group(1))
-            
+
             adds, dels = PDDLParser._parse_effects(body)
             actions[name] = Action(name, tuple(params), frozenset(preconds), frozenset(adds), frozenset(dels))
-        
+
         return actions
-    
+
     @staticmethod
     def parse_problem(path: str) -> Tuple[Dict[str, Set[str]], State, FrozenSet[Predicate]]:
         """Parse problem file and return objects, initial state, and goal."""
         with open(path) as f:
             content = f.read()
-        
+
         objs = defaultdict(set)
         PDDLParser.last_discarded = set()
-        
+
         if om := re.search(r':objects(.*?)(?=\(:init)', content, re.DOTALL | re.IGNORECASE):
             ob = re.sub(r';.*$', '', om.group(1), flags=re.MULTILINE).strip()
             for token in re.findall(r'[^\s():;]+', ob):
@@ -259,19 +253,19 @@ class PDDLParser:
                     objs['location'].add(t_lower)
                 elif t_lower not in IGNORED_KEYWORDS:
                     PDDLParser.last_discarded.add(t_lower)
-        
+
         for t in TOOLS:
             objs['item'].add(t)
             objs['tool'].add(t)
-        
+
         init = set()
         if im := re.search(r':init(.*?)(?=\(:goal|\Z)', content, re.DOTALL | re.IGNORECASE):
             init = PDDLParser._extract_predicates(im.group(1))
-        
+
         goal = set()
         if gm := re.search(r':goal\s+(\(.*\))', content, re.DOTALL | re.IGNORECASE):
             goal = PDDLParser._extract_predicates(gm.group(1))
-        
+
         return dict(objs), State(frozenset(init)), frozenset(goal)
 
 # ==================== ACTION GROUNDING ====================
@@ -282,11 +276,11 @@ class ActionGrounder:
         self.all_items = sorted(objects.get('item', set()))
         self.cifar_objects = sorted(set(self.all_items) - TOOLS)
         self.locations = sorted(LOCATIONS)
-    
+
     def ground_all(self) -> List[Action]:
         """Ground all action schemas with concrete objects."""
         grounded = []
-        
+
         for name, schema in self.schemas.items():
             if name == 'walk-between-rooms':
                 grounded.extend(self._ground_walk(schema))
@@ -296,22 +290,22 @@ class ActionGrounder:
                 grounded.extend(self._ground_stack(schema))
             elif name in ['slice-object', 'clean-object', 'take-photo']:
                 grounded.extend(self._ground_object_action(schema))
-        
+
         return grounded
-    
+
     def _ground_walk(self, schema: Action) -> List[Action]:
         return [schema.instantiate({schema.parameters[0]: l1, schema.parameters[1]: l2})
                 for l1 in self.locations for l2 in self.locations if l1 != l2]
-    
+
     def _ground_item_location(self, schema: Action) -> List[Action]:
         return [schema.instantiate({schema.parameters[0]: item, schema.parameters[1]: loc})
                 for item in self.all_items for loc in self.locations]
-    
+
     def _ground_stack(self, schema: Action) -> List[Action]:
         return [schema.instantiate({schema.parameters[0]: top, schema.parameters[1]: bottom, schema.parameters[2]: loc})
-                for top in self.all_items for bottom in self.all_items 
+                for top in self.all_items for bottom in self.all_items
                 if top != bottom for loc in self.locations]
-    
+
     def _ground_object_action(self, schema: Action) -> List[Action]:
         return [schema.instantiate({schema.parameters[0]: obj, schema.parameters[1]: loc})
                 for obj in self.cifar_objects for loc in self.locations]
@@ -411,24 +405,23 @@ def goal_precondition_heuristic(state: State, goal: FrozenSet[Predicate],
 def bfs_search(initial: State, goal: FrozenSet[Predicate], actions: List[Action],
                max_iter: int = 50000, verbose: bool = True,
                action_index: Optional[Dict[Predicate, List[Action]]] = None) -> Optional[List[Action]]:
-    
+
     # 1. Check if we are already there
     if initial.satisfies(goal):
         return []
-    
+
     # 2. Setup Frontier and Visited set
     start_node = SearchNode(0, initial, None, None, 0)
     frontier = deque([start_node]) # FIFO Queue
     visited = {initial}
-    
+
     if verbose:
         print(f"🔍 BFS Search: {len(actions)} actions, max {max_iter} iterations")
 
     iters = 0
     while frontier and iters < max_iter:
         iters += 1
-        
-        # TODO: Implement the expansion loop
+
         # 1. Pop the next node
         # 2. Check for goal
         # 3. Generate successors
@@ -519,49 +512,49 @@ def astar_search(
 
 # ==================== PROBLEM GENERATION ====================
 
-def create_custom_problem(base_path: str, init_overrides: Set[str], 
+def create_custom_problem(base_path: str, init_overrides: Set[str],
                          goals: Set[str], name: str = "custom") -> str:
     """Generate custom problem file with conflict resolution."""
     with open(base_path) as f:
         content = f.read()
-    
+
     objs_match = (re.search(r'(\(:objects.*?\)(?=\s*\(:init))', content, re.DOTALL | re.IGNORECASE) or
                   re.search(r'(\(:objects.*?\))', content, re.DOTALL | re.IGNORECASE))
     objs_sec = objs_match.group(1) if objs_match else "(:objects)"
-    
+
     base_init = set()
     if base_init_match := re.search(r':init(.*?)(?=\(:goal|\Z)', content, re.DOTALL | re.IGNORECASE):
         base_init = PDDLParser._extract_predicates(base_init_match.group(1))
-    
+
     user_init = {Predicate.from_string(p) for p in init_overrides}
     user_goal = {Predicate.from_string(p) for p in goals}
-    
+
     # Build conflict map
     user_defs = defaultdict(set)
     for p in user_init:
         if p.args:
             user_defs[p.args[0]].add(p.name)
         user_defs['GLOBAL'].add(p.name)
-    
+
     # Resolve conflicts
     final_init = set()
     for bp in base_init:
         if bp in user_init:
             continue
-        
+
         conflict = _has_conflict(bp, user_defs)
         if not conflict:
             final_init.add(bp)
-    
+
     final_init.update(user_init)
-    
+
     problem_str = f"""(define (problem {name}-problem)
   (:domain cifar100-process)
   {objs_sec}
   (:init {chr(10).join(f"    {p}" for p in sorted(map(str, final_init)))} )
   (:goal (and {chr(10).join(f"      {p}" for p in sorted(map(str, user_goal)))} ))
 )"""
-    
+
     tf = tempfile.NamedTemporaryFile(mode='w', suffix='.pddl', delete=False)
     tf.write(problem_str)
     tf.close()
@@ -571,14 +564,14 @@ def create_custom_problem(base_path: str, init_overrides: Set[str],
 def _has_conflict(pred: Predicate, user_defs: Dict[str, Set[str]]) -> bool:
     """Check if base predicate conflicts with user definitions."""
     global_defs = user_defs['GLOBAL']
-    
+
     if pred.name == 'hand-empty' and 'holding' in global_defs:
         return True
     if pred.name == 'holding' and 'hand-empty' in global_defs:
         return True
     if pred.name == 'agent-at' and 'agent-at' in global_defs:
         return True
-    
+
     if pred.args:
         obj_defs = user_defs[pred.args[0]]
         if pred.name in ['at', 'on-top'] and {'at', 'on-top'} & obj_defs:
@@ -591,7 +584,7 @@ def _has_conflict(pred: Predicate, user_defs: Dict[str, Set[str]]) -> bool:
             return True
         if pred.name == 'clean' and 'wet' in obj_defs:
             return True
-    
+
     return False
 
 # ==================== VALIDATION ====================
@@ -599,12 +592,12 @@ def _has_conflict(pred: Predicate, user_defs: Dict[str, Set[str]]) -> bool:
 def validate_user_conditions(conditions: Set[str]):
     """Validate user input for syntax and vocabulary."""
     valid_vocab = CIFAR_100_CLASSES | TOOLS | LOCATIONS
-    
+
     for s in conditions:
         s_clean = s.strip()
         if not (s_clean.startswith('(') and s_clean.endswith(')')):
             raise ValueError(f"SYNTAX ERROR: '{s}' is missing parentheses.")
-        
+
         pred = Predicate.from_string(s_clean)
         for arg in pred.args:
             if arg not in valid_vocab:
@@ -622,16 +615,16 @@ def print_plan_execution(plan: List[Dict], object_name: str, initial_conditions:
     print("="*80)
     print(f"{'STEP':<6} | {'ACTION':<35} | {'STATE CHANGES / INITIAL STATE':<40}")
     print("-" * 90)
-    
+
     init_str = ", ".join(sorted(initial_conditions))
     print(f"{'0':<6} | {'(INITIAL STATE)':<35} | {init_str}")
-    
+
     if not plan:
         print("-" * 90)
         print("✓ GOAL ALREADY ACHIEVED (No actions needed)")
         print("="*80 + "\n")
         return
-    
+
     for step in plan:
         changes = []
         if step['added']:
@@ -639,9 +632,9 @@ def print_plan_execution(plan: List[Dict], object_name: str, initial_conditions:
         if step['removed']:
             changes.append(f"-- {', '.join(step['removed'])}")
         changes_str = " | ".join(changes)
-        
+
         print(f"{step['step']:<6} | {step['action']:<35} | {changes_str}")
-    
+
     print("-" * 90)
     print("✓ GOAL ACHIEVED")
     print("="*80 + "\n")

@@ -1,5 +1,6 @@
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
 .DS_Store
 .venv/
 venv/
@@ -8,3 +9,7 @@ cifar100_data/
 region_descriptions.json
 region_descriptions.json.zip
 vg_text.txt
+best_model.pth
+training_loss.png
+grid_runs/
+outputs/

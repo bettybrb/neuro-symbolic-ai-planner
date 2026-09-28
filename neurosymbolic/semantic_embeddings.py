@@ -1,6 +1,4 @@
-"""
-Lab 6: Skip-Gram with Negative Sampling (SGNS) for Network Embeddings
-"""
+"""Skip-Gram with Negative Sampling for learning semantic graph embeddings."""
 
 import torch
 import torch.nn as nn
@@ -34,7 +32,7 @@ def download_file(url, out_path):
     print(f"Downloaded to {out_path}")
 
 
-def prepare_visual_genome_text(zip_url, zip_path="region_descriptions.json.zip", 
+def prepare_visual_genome_text(zip_url, zip_path="region_descriptions.json.zip",
                                 json_path="region_descriptions.json",
                                 output_path="vg_text.txt"):
     if os.path.exists(output_path):
@@ -61,17 +59,17 @@ def filter_punctuation_from_network(network_data, punctuation_tokens={'.', ',', 
     original_graph = network_data['graph']
     original_nodes = network_data['nodes']
     original_distance_matrix = network_data['distance_matrix']
-    
+
     filtered_nodes = [n for n in original_nodes if n not in punctuation_tokens]
     old_indices = [i for i, n in enumerate(original_nodes) if n not in punctuation_tokens]
     filtered_distance_matrix = original_distance_matrix[np.ix_(old_indices, old_indices)]
-    
+
     filtered_graph = nx.Graph()
     filtered_graph.add_nodes_from(filtered_nodes)
     for u, v in original_graph.edges():
         if u in filtered_nodes and v in filtered_nodes:
             filtered_graph.add_edge(u, v)
-    
+
     print(f"\nPUNCTUATION FILTER: {len(original_nodes)} -> {len(filtered_nodes)} nodes")
     return {**network_data, 'graph': filtered_graph, 'nodes': filtered_nodes, 'distance_matrix': filtered_distance_matrix}
 
@@ -90,7 +88,7 @@ class SkipGramDataset(torch.utils.data.Dataset):
         self.vocab_size = len(nodes)
         self.num_negative = num_negative
         self.distance_matrix = distance_matrix
-        
+
         self.contexts = self._build_contexts(context_size)
         self.context_indices = self._build_context_indices()
         self.neg_sampling_probs = self._build_neg_sampling_probs(token_counts, neg_sampling_power)
@@ -157,10 +155,10 @@ class SkipGramDataset(torch.utils.data.Dataset):
                         continue
                 pairs.append((center_idx, context_idx))
                 raw_distances.append(self.distance_matrix[center_idx, context_idx])
-        
+
         if len(pairs) == 0:
             return [], np.array([], dtype=np.float32)
-        
+
         raw_distances = np.array(raw_distances, dtype=np.float32)
         max_dist = raw_distances.max()
         weights = (max_dist + 1) - raw_distances
@@ -176,7 +174,7 @@ class SkipGramDataset(torch.utils.data.Dataset):
             base_seed = torch.initial_seed()
             seed = base_seed + (worker_info.id if worker_info else 0)
             self._local_rng = np.random.RandomState(seed % (2**32))
-        
+
         center_idx, context_idx = self.pairs[idx]
         excluded = self.context_indices[center_idx]
 
@@ -246,16 +244,16 @@ class SkipGramModel(nn.Module):
         center_emb = self.center_embeddings(center)
         if apply_dropout:
             center_emb = self.dropout(center_emb)
-        
+
         context_emb = self.context_embeddings(context)
         negative_emb = self.context_embeddings(negatives)
-        
+
         # Positive score
         pos_score = torch.sum(center_emb * context_emb, dim=1)
-        
+
         # Negative scores
         neg_score = torch.bmm(negative_emb, center_emb.unsqueeze(2)).squeeze(2)
-        
+
         if label_smoothing and label_smoothing > 0.0:
             pos_targets = torch.full_like(pos_score, 1.0 - label_smoothing)
             neg_targets = torch.full_like(neg_score, label_smoothing)
@@ -282,34 +280,34 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
                      patience=3, device=None, save_plot=True, neg_sampling_power=0.75,
                      max_grad_norm=None, num_workers=0, pin_memory=None,
                      persistent_workers=False, subsample_t=None, samples_per_epoch=None):
-    
+
     # Set random seeds for reproducibility
     import random
     random.seed(42)
     np.random.seed(42)
     torch.manual_seed(42)
-    
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     network_data = filter_punctuation_from_network(network_data)
     nodes = network_data['nodes']
     graph = network_data['graph']
     distance_matrix = network_data['distance_matrix']
     token_counts = network_data.get('token_counts')
-    
+
     all_edges = list(graph.edges())
     np.random.shuffle(all_edges)
     split_idx = int(len(all_edges) * (1 - validation_fraction))
-    
+
     train_graph = nx.Graph()
     train_graph.add_nodes_from(nodes)
     train_graph.add_edges_from(all_edges[:split_idx])
-    
+
     val_graph = nx.Graph()
     val_graph.add_nodes_from(nodes)
     val_graph.add_edges_from(all_edges[split_idx:])
-    
+
     print(f"Train edges: {split_idx}, Val edges: {len(all_edges) - split_idx}")
-    
+
     train_dataset = SkipGramDataset(
         train_graph, nodes, distance_matrix, num_negative, context_size,
         token_counts=token_counts, neg_sampling_power=neg_sampling_power,
@@ -320,11 +318,11 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
         token_counts=token_counts, neg_sampling_power=neg_sampling_power,
         subsample_t=subsample_t
     )
-    
+
     if len(train_dataset) == 0:
         print("ERROR: No training pairs!")
         return None
-    
+
     num_samples = samples_per_epoch or len(train_dataset)
     sampler = WeightedRandomSampler(train_dataset.get_sample_weights(), num_samples, replacement=True)
     if pin_memory is None:
@@ -346,18 +344,18 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
         pin_memory=pin_memory,
         persistent_workers=use_persistent,
     )
-    
+
     model = SkipGramModel(len(nodes), embedding_dim, dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    
+
     print(f"\nTraining: {len(nodes)} vocab, {embedding_dim} dim, lr={learning_rate}")
-    
+
     train_losses, val_losses = [], []
     best_val_loss = float('inf')
     patience_counter = 0
     best_model_state = None
-    
+
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
@@ -370,10 +368,10 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
             total_loss += loss.item()
-        
+
         train_loss = total_loss / len(train_loader)
         train_losses.append(train_loss)
-        
+
         model.eval()
         total_val_loss = 0.0
         with torch.no_grad():
@@ -382,13 +380,13 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
                 total_val_loss += model(
                     centers, contexts, negs, False, label_smoothing=label_smoothing
                 ).mean().item()
-        
+
         val_loss = total_val_loss / max(len(val_loader), 1)
         val_losses.append(val_loss)
-        
+
         print(f"Epoch {epoch:02d}  train={train_loss:.4f}  val={val_loss:.4f}")
         scheduler.step()
-        
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
@@ -401,10 +399,10 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
             if patience_counter >= patience:
                 print(f"Early stopping at epoch {epoch}")
                 break
-    
+
     if best_model_state:
         model.load_state_dict(best_model_state)
-    
+
     if save_plot:
         plt.figure(figsize=(10, 6))
         plt.plot(train_losses, 'o-', label='Train')
@@ -412,7 +410,7 @@ def train_embeddings(network_data, embedding_dim=128, batch_size=512, epochs=20,
         plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.grid(True)
         plt.savefig('training_loss.png', dpi=150)
         plt.close()
-    
+
     return {'nodes': nodes, 'embeddings': model.get_embeddings(), 'model': model,
             'train_losses': train_losses, 'val_losses': val_losses}
 
@@ -436,27 +434,27 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
     import shutil
     import sys
     from contextlib import redirect_stdout, redirect_stderr
-    
+
     if not isinstance(base_config, dict):
         raise ValueError("base_config must be a dict")
     if not isinstance(grid, dict) or not grid:
         raise ValueError("grid must be a non-empty dict of parameter lists")
-    
+
     for key, values in grid.items():
         if key not in base_config:
             raise ValueError(f"Grid key '{key}' not found in base_config")
         if not isinstance(values, (list, tuple)) or len(values) == 0:
             raise ValueError(f"Grid values for '{key}' must be a non-empty list")
-    
+
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
-    
+
     grid_keys = list(grid.keys())
     grid_values = [grid[key] for key in grid_keys]
     combinations = list(itertools.product(*grid_values))
     total_runs = len(combinations)
     width = max(4, len(str(total_runs)))
-    
+
     abbrev = {
         "learning_rate": "lr",
         "context_size": "ctx",
@@ -466,28 +464,28 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
     results_rows = []
     run_records = []
     durations = []
-    
+
     def _format_value(value):
         text = str(value)
         return text.replace(os.sep, "_")
-    
+
     def _format_suffix(config):
         parts = []
         for key in grid_keys:
             short = abbrev.get(key, key)
             parts.append(f"{short}{_format_value(config[key])}")
         return "_".join(parts)
-    
+
     def _format_duration(seconds):
         return str(datetime.timedelta(seconds=int(seconds)))
-    
+
     def _set_seed(seed_value):
         random.seed(seed_value)
         np.random.seed(seed_value)
         torch.manual_seed(seed_value)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed_value)
-    
+
     def _hardware_info():
         info = {
             "cpu": platform.processor() or platform.machine(),
@@ -499,28 +497,28 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
             info["gpu"] = torch.cuda.get_device_name(0)
             info["gpu_count"] = torch.cuda.device_count()
         return info
-    
+
     def _load_json(path):
         with open(path, "r") as f:
             return json.load(f)
-    
+
     class _Tee:
         def __init__(self, *streams):
             self.streams = streams
-        
+
         def write(self, data):
             for stream in self.streams:
                 stream.write(data)
             for stream in self.streams:
                 stream.flush()
-        
+
         def flush(self):
             for stream in self.streams:
                 stream.flush()
-        
+
         def isatty(self):
             return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
-    
+
     def _build_row(run_id, config, metrics):
         return {
             "run_id": run_id,
@@ -535,7 +533,7 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
             "duration_seconds": metrics.get("duration_seconds"),
             "saved_checkpoint_path": metrics.get("saved_checkpoint_path"),
         }
-    
+
     pbar = tqdm(combinations, total=total_runs, desc="Grid search", unit="run")
     eval_keys = ["similarity_examples", "analogy_examples", "cluster_seeds"]
     for run_idx, combo in enumerate(pbar, start=1):
@@ -543,12 +541,12 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
         run_config = dict(base_config)
         run_config.update(grid_override)
         train_config = {k: v for k, v in run_config.items() if k not in eval_keys}
-        
+
         run_id = f"run_{run_idx:0{width}d}"
         run_suffix = _format_suffix(run_config)
         run_dir = os.path.join(out_dir, f"{run_id}_{run_suffix}")
         os.makedirs(run_dir, exist_ok=True)
-        
+
         metrics_path = os.path.join(run_dir, "metrics.json")
         config_path = os.path.join(run_dir, "config.json")
         if os.path.exists(metrics_path):
@@ -566,17 +564,17 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
                 durations.append(metrics["duration_seconds"])
             tqdm.write(f"[{run_idx}/{total_runs}] {run_id} already complete; skipping.")
             continue
-        
+
         with open(config_path, "w") as f:
             json.dump(run_config, f, indent=2, sort_keys=True)
-        
+
         avg = (sum(durations) / len(durations)) if durations else None
         if avg:
             eta = avg * (total_runs - run_idx + 1)
             tqdm.write(f"[{run_idx}/{total_runs}] {run_id} avg {avg:.1f}s/run ETA {_format_duration(eta)}")
         else:
             tqdm.write(f"[{run_idx}/{total_runs}] {run_id} starting (estimating runtime)")
-        
+
         log_path = os.path.join(run_dir, "training_log.txt")
         start_time = time.time()
         try:
@@ -591,10 +589,10 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
                         results = train_embeddings(network_data=network_data, **train_config)
             finally:
                 os.chdir(original_cwd)
-            
+
             if results is None:
                 raise RuntimeError("train_embeddings returned None")
-            
+
             duration = time.time() - start_time
             durations.append(duration)
             train_losses = results.get("train_losses", [])
@@ -603,20 +601,20 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
             best_epoch = int(np.argmin(val_losses) + 1) if val_losses else None
             best_val_loss = float(min(val_losses)) if val_losses else None
             train_loss_last = float(train_losses[-1]) if train_losses else None
-            
+
             default_ckpt = os.path.join(run_dir, "best_model.pth")
             saved_ckpt = None
             if os.path.exists(default_ckpt):
                 saved_ckpt = os.path.join(run_dir, f"best_model_{run_id}.pth")
                 shutil.copy2(default_ckpt, saved_ckpt)
-            
+
             nn_eval_path = None
             eval_kwargs = {k: run_config[k] for k in eval_keys if k in run_config}
             if eval_kwargs:
                 nn_eval_path = os.path.join(run_dir, "nearest_neighbors.txt")
                 with open(nn_eval_path, "w") as nn_f, redirect_stdout(nn_f), redirect_stderr(nn_f):
                     analyze_embeddings(results["nodes"], results["embeddings"], **eval_kwargs)
-            
+
             metrics = {
                 "run_id": run_id,
                 "final_epoch": final_epoch,
@@ -631,10 +629,10 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
             if nn_eval_path:
                 metrics["nearest_neighbors_path"] = nn_eval_path
                 metrics["nearest_neighbors_config"] = eval_kwargs
-            
+
             with open(metrics_path, "w") as f:
                 json.dump(metrics, f, indent=2, sort_keys=True)
-            
+
             results_rows.append(_build_row(run_id, run_config, metrics))
             run_records.append({
                 "run_id": run_id,
@@ -660,7 +658,7 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    
+
     columns = [
         "run_id",
         "embedding_dim",
@@ -674,7 +672,7 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
         "duration_seconds",
         "saved_checkpoint_path",
     ]
-    
+
     results_csv = os.path.join(out_dir, "results.csv")
     results_json = os.path.join(out_dir, "results.json")
     try:
@@ -691,7 +689,7 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
         with open(results_json, "w") as f:
             json.dump(results_rows, f, indent=2)
         results_df = results_rows
-    
+
     best_run = None
     best_loss = float("inf")
     for record in run_records:
@@ -704,7 +702,7 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
         if loss < best_loss:
             best_loss = loss
             best_run = record
-    
+
     best_run_path = os.path.join(out_dir, "best_run.json")
     if best_run:
         best_payload = {
@@ -721,7 +719,7 @@ def run_skipgram_grid_search(network_data, base_config, grid, out_dir="grid_runs
         with open(best_run_path, "w") as f:
             json.dump({"error": "No successful runs completed."}, f, indent=2)
         print("No successful runs completed; best_run.json written with error info.")
-    
+
     return results_df
 
 
@@ -772,19 +770,19 @@ def analyze_embeddings(nodes, embeddings, similarity_examples=None, analogy_exam
     print("\n" + "="*80)
     print("EMBEDDING ANALYSIS")
     print("="*80)
-    
+
     print(f"\nVocabulary: {len(nodes):,}  Embedding dim: {embeddings.shape[1]}")
-    
+
     sample = embeddings[:min(100, len(embeddings))]
     norms = np.linalg.norm(sample, axis=1, keepdims=True)
     normalized = sample / (norms + 1e-10)
     sim_matrix = normalized @ normalized.T
     sim_vals = sim_matrix[np.triu_indices_from(sim_matrix, k=1)]
-    
+
     print(f"\nSimilarity stats (100 word sample):")
     print(f"  Mean: {sim_vals.mean():.4f}  Std: {sim_vals.std():.4f}")
     print(f"  Min: {sim_vals.min():.4f}  Max: {sim_vals.max():.4f}")
-    
+
     if similarity_examples:
         print("\n" + "="*80)
         print("NEAREST NEIGHBORS")
@@ -797,7 +795,7 @@ def analyze_embeddings(nodes, embeddings, similarity_examples=None, analogy_exam
             else:
                 for token, score in similar:
                     print(f"  {token:15s}  similarity={score:.4f}")
-    
+
     if analogy_examples:
         print("\n" + "="*80)
         print("WORD ANALOGIES (a:b :: c:?)")
@@ -810,7 +808,7 @@ def analyze_embeddings(nodes, embeddings, similarity_examples=None, analogy_exam
                     print(f"  {token:15s}  score={score:.4f}")
             else:
                 print("  (words not in vocabulary)")
-    
+
     if cluster_seeds:
         print("\n" + "="*80)
         print("SEMANTIC CLUSTERS")
@@ -819,7 +817,7 @@ def analyze_embeddings(nodes, embeddings, similarity_examples=None, analogy_exam
             if seed in nodes:
                 cluster = find_similar_words(seed, nodes, embeddings, top_k=5)
                 print(f"\n'{seed}': {', '.join([w for w, _ in cluster])}")
-    
+
     print("\n" + "="*80)
 
 

@@ -1,13 +1,4 @@
-"""
-CW2: Neuro-Symbolic AI System
-Student Name: Alzbeta Rehakova
-Student ID: 251108
-
-This module implements a neuro-symbolic AI system that combines:
-- Computer Vision (CIFAR-100 object recognition)
-- Natural Language Processing (Skip-gram word embeddings)
-- Symbolic Planning (PDDL planning)
-"""
+"""End-to-end neuro-symbolic pipeline connecting perception, semantic representations and symbolic planning."""
 
 from __future__ import annotations
 
@@ -23,14 +14,15 @@ import torch.nn.functional as F
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 # ============================================================================
-# SECTION 1: CIFAR-100 SEMANTIC EXPANSION (TASK 5)
+# SEMANTIC REPRESENTATION LOADING
 # ============================================================================
 
-# DO NOT CHANGE THIS FUNCTION's signature
-def build_my_embeddings(
-    checkpoint_path: str = "best_skipgram_523words.pth",
+def load_semantic_embeddings(
+    checkpoint_path: str = str(REPO_ROOT / "models" / "semantic_embeddings.pth"),
 ) -> Tuple[Dict[str, int], np.ndarray]:
     """
     Load and return your trained Skip-gram embeddings.
@@ -187,26 +179,25 @@ CIFAR_100_CLASSES = {
 
 
 # ============================================================================
-# SECTION 2: MULTI-MODAL PLANNING (TASK 6)
+# MULTIMODAL SYMBOLIC PLANNING
 # ============================================================================
 
-def plan_generator(
+def generate_plan(
     input_data: Union[str, Path, np.ndarray, torch.Tensor, Any],
     initial_state: Iterable[Union[str, Any]],
     goal_state: Iterable[Union[str, Any]],
-    domain_file: str = "domain.pddl",
-    skipgram_path: str = "best_skipgram_523words.pth",
-    projection_path: str = "best_cifar100_projection.pth",
+    domain_file: str = str(REPO_ROOT / "planning" / "domain.pddl"),
+    skipgram_path: str = str(REPO_ROOT / "models" / "semantic_embeddings.pth"),
+    projection_path: str = str(REPO_ROOT / "models" / "visual_projection.pth"),
     device: Optional[str] = None,
 ) -> Optional[List[Dict[str, Union[int, str, List[str]]]]]:
     """
-    End-to-end Task 6 pipeline: identify object (image or text), parse domain, plan, validate.
+    Ground image or text input into a symbolic concept, search for a valid plan and verify the resulting state transitions.
 
-    Predicates can be provided as strings (e.g. "(at apple lab)") or lab9.Predicate objects.
+    Predicates can be provided as strings (e.g. "(at apple lab)") or symbolic_planner.Predicate objects.
     """
-    # Imports only inside function (matches coursework execution style)
-    from lab8 import ImageEncoder
-    from lab9 import ActionGrounder, PDDLParser, Predicate, State, _has_conflict, astar_search
+    from .vision_alignment import ImageEncoder
+    from .symbolic_planner import ActionGrounder, PDDLParser, Predicate, State, _has_conflict, astar_search
     from PIL import Image
     from torchvision import transforms
     import re
@@ -225,7 +216,7 @@ def plan_generator(
     # Load Skip-Gram vocab + embedding matrix
     # ------------------------------------------------------------------------
     try:
-        vocab, embeddings = build_my_embeddings(skipgram_path)
+        vocab, embeddings = load_semantic_embeddings(skipgram_path)
     except Exception as exc:
         warnings.warn(f"Failed to load skip-gram embeddings: {exc}")
         return None
@@ -456,7 +447,7 @@ def plan_generator(
             obj_vocab = class_words[int(np.argmax(scores))]
 
         if debug:
-            print(f"[plan_generator] identified image as: {obj_vocab}")
+            print(f"[generate_plan] identified image as: {obj_vocab}")
 
     else:
         obj_vocab = to_vocab_name(input_data)
@@ -464,7 +455,7 @@ def plan_generator(
             warnings.warn(f"Unknown object name: '{input_data}' not in vocabulary.")
             return None
         if debug:
-            print(f"[plan_generator] using text object: {obj_vocab}")
+            print(f"[generate_plan] using text object: {obj_vocab}")
 
     obj_pddl = to_pddl_name(obj_vocab)
 
@@ -728,7 +719,7 @@ def plan_generator(
 
 if __name__ == "__main__":
     try:
-        vocab, embeddings = build_my_embeddings()
+        vocab, embeddings = load_semantic_embeddings()
         vocab_size = len(vocab)
 
         print(f"Vocabulary size: {vocab_size}")
@@ -750,13 +741,13 @@ if __name__ == "__main__":
             print("All CIFAR-100 class names are present.")
 
     except Exception as exc:
-        print(f"Task 5 check failed: {exc}")
+        print(f"Embedding checkpoint validation failed: {exc}")
 
-    domain_path = Path("domain.pddl")
-    proj_path = Path("best_cifar100_projection.pth")
+    domain_path = REPO_ROOT / "planning" / "domain.pddl"
+    proj_path = Path(str(REPO_ROOT / "models" / "visual_projection.pth"))
 
     if domain_path.exists() and proj_path.exists():
-        print("\n[Task 6 Demo] Planning for apple...")
+        print("\n[Planning demo] Planning for apple...")
 
         initial = {
             "(agent-at lab)",
@@ -767,7 +758,7 @@ if __name__ == "__main__":
         }
         goal = {"(cut-into-pieces apple)"}
 
-        plan = plan_generator(
+        plan = generate_plan(
             input_data="apple",
             initial_state=initial,
             goal_state=goal,
@@ -782,4 +773,4 @@ if __name__ == "__main__":
                 print(step)
 
     else:
-        print("\n[Task 6 Demo] Skipped (missing domain.pddl or best_cifar100_projection.pth).")
+        print("\n[Planning demo] Skipped because the planning domain or visual projection checkpoint is unavailable.")

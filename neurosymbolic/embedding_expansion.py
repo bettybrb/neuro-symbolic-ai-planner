@@ -1,9 +1,4 @@
-"""
-Simple Genetic Algorithm for Word Embedding Insertion
-======================================================================
-A (1+λ) Evolution Strategy for inserting new word embeddings into a trained
-Skip-Gram model while preserving the existing embedding space structure.
-"""
+"""Evolutionary expansion of a learned semantic embedding space with new concepts."""
 
 import torch
 import numpy as np
@@ -17,12 +12,12 @@ import torchvision
 import pickle
 
 try:
-    from lab6 import SkipGramModel, find_similar_words
+    from .semantic_embeddings import SkipGramModel, find_similar_words
 except Exception as e:
-    raise ImportError("lab6.py is required for lab7 (SkipGramModel, find_similar_words).") from e
+    raise ImportError("semantic_embeddings is required for embedding expansion.") from e
 
 try:
-    from lab2 import process_text_network
+    from .text_graph import process_text_network
 except Exception:
     process_text_network = None
 
@@ -35,21 +30,21 @@ import os
 # DATA LOADING & PREPARATION
 # ============================================================================
 
-def load_trained_model(model_path: str, vocab_size: int, 
+def load_trained_model(model_path: str, vocab_size: int,
                        embedding_dim: int, dropout: float) -> Tuple[torch.nn.Module, np.ndarray]:
     """Load trained Skip-Gram model and extract embeddings."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(model_path, map_location=device)
-    
+
     model = SkipGramModel(vocab_size=vocab_size, embedding_dim=embedding_dim, dropout=dropout).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
+
     with torch.no_grad():
         embeddings_tensor = model.get_embeddings()
-        embeddings = (embeddings_tensor.cpu().numpy() if isinstance(embeddings_tensor, torch.Tensor) 
+        embeddings = (embeddings_tensor.cpu().numpy() if isinstance(embeddings_tensor, torch.Tensor)
                      else embeddings_tensor).astype(np.float32)
-    
+
     print(f"✓ Loaded model: {embeddings.shape[0]} embeddings, dim={embeddings.shape[1]}")
     return model, embeddings
 
@@ -160,7 +155,7 @@ def analyze_vocabulary_overlap(cifar_vocab: List[str], network_vocab: List[str])
     cifar_set, network_set = set(cifar_vocab), set(network_vocab)
     overlapping = sorted(list(cifar_set.intersection(network_set)))
     missing = sorted(list(cifar_set - network_set))
-    
+
     print(f"\n{'='*70}")
     print("VOCABULARY OVERLAP ANALYSIS")
     print(f"{'='*70}")
@@ -173,7 +168,7 @@ def analyze_vocabulary_overlap(cifar_vocab: List[str], network_vocab: List[str])
     if missing:
         print(f"\nMissing: {', '.join(missing)}")
     print(f"{'='*70}\n")
-    
+
     return missing
 
 
@@ -390,11 +385,11 @@ def extract_word_contexts(
 ) -> Union[Dict[str, Counter], Tuple[Dict[str, Counter], Dict[str, int]]]:
     """
     Extract co-occurrence context statistics for target words from a text corpus.
-    
+
     This function reads a corpus file line-by-line and tracks which words appear
     near specified target words. For each target word, it counts how many times
     each vocabulary word appears within a window around it.
-    
+
     Args:
         text_file: Path to the corpus text file to analyze.
         target_words: List of words to extract contexts for.
@@ -402,7 +397,7 @@ def extract_word_contexts(
         window: Number of words to look on each side of the target word.
         extra_lines: Optional list of synthetic text lines to inject.
         extra_weight: Weight multiplier for contexts from extra_lines.
-    
+
     Returns:
         If return_counts is False (default):
             A dictionary mapping each target word to a Counter of context words and
@@ -410,12 +405,12 @@ def extract_word_contexts(
         If return_counts is True:
             Tuple of (contexts, target_counts) where target_counts maps each target
             word to its occurrence count in the corpus.
-        
+
     Example:
         >>> extract_word_contexts('corpus.txt', ['king', 'queen'], vocab, window=2)
-        {'king': Counter({'royal': 5, 'crown': 3}), 
+        {'king': Counter({'royal': 5, 'crown': 3}),
          'queen': Counter({'royal': 4, 'throne': 2})}
-    
+
     Implementation guidelines:
     --------------------------
     1. Initialize a dictionary `{word: Counter()}` for each target word.
@@ -433,7 +428,7 @@ def extract_word_contexts(
     6. Optionally print progress (e.g., every 50,000 lines) for user feedback.
     7. Return the dictionary of Counters.
     """
-    
+
     contexts = {word: Counter() for word in target_words}
     target_counts = {word: 0.0 for word in target_words}
     parts_map = {word: [p for p in re.split(r"[-_ ]+", word) if p] for word in target_words}
@@ -523,13 +518,13 @@ def compute_fitness(
 ) -> float:
     """
     Compute a three-term fitness score for a candidate word embedding vector.
-    
-    This function evaluates how well a candidate vector fits the learned 
+
+    This function evaluates how well a candidate vector fits the learned
     embedding space by combining three complementary metrics:
     1. Corpus likelihood (how well it predicts observed contexts)
     2. Norm matching (how similar its magnitude is to typical embeddings)
     3. Anchor similarity (how similar it is to known reference words)
-    
+
     Args:
         vec: Candidate embedding vector to evaluate.
         word: Target word (for reference, not used in computation).
@@ -549,45 +544,45 @@ def compute_fitness(
                  - 'corpus': Weight for corpus likelihood term
                  - 'norm': Weight for norm matching term
                  - 'anchor': Weight for anchor similarity term
-    
+
     Returns:
         Combined fitness score in the range [0, 1], where higher is better.
-        
+
     Example:
         >>> vec = np.array([0.5, -0.3, 0.8, 0.1])
         >>> stats = {'mean_norm': 1.0, 'std_norm': 0.2, 'global_std': 0.5}
         >>> weights = {'corpus': 0.5, 'norm': 0.3, 'anchor': 0.2}
-        >>> fitness = compute_fitness(vec, 'king', ctx_vecs, ctx_weights, 
+        >>> fitness = compute_fitness(vec, 'king', ctx_vecs, ctx_weights,
         ...                           neg_vecs, anchor_vecs, stats, weights)
         >>> print(f"Fitness: {fitness:.4f}")
         Fitness: 0.7234
-    
+
     Implementation guidelines:
     --------------------------
     Term 1 - Corpus Likelihood (L_corpus_norm):
         - For positive contexts: sum over ctx_weights * log(sigmoid(ctx_vecs · vec))
-    
+
         - For negative samples: sum over log(sigmoid(-neg_vecs · vec))
         - Add small epsilon (1e-10) inside log for numerical stability
         - Normalize by total samples, then apply sigmoid to map to [0, 1]
         - Default to 0.5 if no samples available
-        
+
     Term 2 - Norm Match (S_norm):
         - Compute L2 norm of the candidate vector
         - Use Gaussian similarity: exp(-((norm - mean_norm)² / (2 * std_norm²)))
         - This rewards vectors with norms close to the typical embedding norm
-        
+
     Term 3 - Anchor Similarity (S_anchor):
         - Normalize the candidate vector (divide by its norm + epsilon)
         - Compute dot products with all anchor vectors (they're pre-normalized)
         - Take the mean similarity across all anchors
         - Default to 0.5 if no anchors provided
-        
+
     Final score:
-        - Weighted sum: weights['corpus'] * L_corpus_norm + 
-                       weights['norm'] * S_norm + 
+        - Weighted sum: weights['corpus'] * L_corpus_norm +
+                       weights['norm'] * S_norm +
                        weights['anchor'] * S_anchor
-    
+
     Notes:
         - Handle None values for optional parameters (ctx_vecs, ctx_weights, anchor_vecs)
         - Use vectorized NumPy operations for efficiency
@@ -656,12 +651,12 @@ def initialize_embedding(
 ) -> np.ndarray:
     """
     Initialize an embedding vector for a word using corpus bootstrap.
-    
+
     This function creates an initial embedding by computing a weighted average
     of the embeddings of words that frequently co-occur with the target word.
     This provides a data-driven starting point that places the new word near
     semantically related words in the embedding space.
-    
+
     Args:
         word: Target word to initialize an embedding for.
         contexts: Dictionary mapping words to their co-occurrence contexts.
@@ -669,10 +664,10 @@ def initialize_embedding(
         embeddings: Pre-trained embedding matrix. Shape: (vocab_size, embedding_dim).
         word_to_idx: Dictionary mapping words to their row indices in embeddings.
         anchors: Optional anchor map to use when no contexts are available.
-    
+
     Returns:
         Initial embedding vector for the word. Shape: (embedding_dim,).
-        
+
     Example:
         >>> contexts = {'king': Counter({'queen': 50, 'royal': 30, 'castle': 20})}
         >>> embeddings = np.random.randn(1000, 300)  # 1000 words, 300 dims
@@ -680,28 +675,28 @@ def initialize_embedding(
         >>> vec = initialize_embedding('king', contexts, embeddings, word_to_idx)
         >>> vec.shape
         (300,)
-    
+
     Implementation guidelines:
     --------------------------
     1. Handle the no-context case:
        - If the word has no contexts (empty Counter), return the mean of all
          embeddings as a neutral starting point
-    
+
     2. Get top context words:
        - Extract the top 20 most frequent context words using Counter.most_common()
        - This focuses on the strongest statistical relationships
-    
+
     3. Compute weighted average:
        - Calculate the total weight (sum of all counts)
        - For each context word that exists in word_to_idx:
            * Get its embedding vector
            * Weight it by (count / weight_sum)
            * Add to running sum
-    
+
     4. Validate the result:
        - Check if the resulting vector has non-zero norm
        - If zero (e.g., no valid context words found), fall back to mean embedding
-    
+
     Notes:
         - Some context words may not be in word_to_idx; skip these
         - The weighted average naturally places the new word near its contexts
@@ -746,12 +741,12 @@ def precompute_fitness_vectors(
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], np.ndarray, Optional[np.ndarray]]:
     """
     Precompute all vectors needed for fitness evaluation.
-    
+
     This function extracts and prepares the three types of vectors used in
     fitness computation: positive context vectors, negative sample vectors,
     and anchor vectors. Precomputing these vectors once improves efficiency
     when evaluating fitness multiple times during optimization.
-    
+
     Args:
         word: Target word being optimized.
         contexts: Dictionary mapping words to their co-occurrence contexts.
@@ -764,14 +759,14 @@ def precompute_fitness_vectors(
         context_weighting: "log" (default), "count", or "tfidf" for context weights.
         idf: Optional IDF weights for context words (used with "tfidf").
         neg_sampling_probs: Optional unigram^power distribution aligned to vocab_list.
-    
+
     Returns:
         Tuple of (ctx_vecs, ctx_weights, neg_vecs, anchor_vecs):
         - ctx_vecs: Context word embeddings. Shape: (n_contexts, dim) or None.
         - ctx_weights: Normalized context weights. Shape: (n_contexts,) or None.
         - neg_vecs: Negative sample embeddings. Shape: (num_negatives, dim).
         - anchor_vecs: Normalized anchor embeddings. Shape: (n_anchors, dim) or None.
-        
+
     Example:
         >>> contexts = {'king': Counter({'queen': 50, 'royal': 30})}
         >>> anchors = {'king': ['queen', 'monarch', 'ruler']}
@@ -782,7 +777,7 @@ def precompute_fitness_vectors(
         (2, 300)
         >>> neg_v.shape  # Negative samples
         (15, 300)
-    
+
     Implementation guidelines:
     --------------------------
     Part 1 - Positive Context Vectors:
@@ -795,12 +790,12 @@ def precompute_fitness_vectors(
             * If any valid contexts found:
               - Convert lists to numpy arrays
               - Normalize weights to sum to 1.0
-    
+
     Part 2 - Negative Sample Vectors:
         - Randomly sample num_negatives words from vocab_list (without replacement)
         - Look up their embeddings and stack into an array
         - Shape should be (num_negatives, embedding_dim)
-    
+
     Part 3 - Anchor Vectors:
         - Initialize anchor_vecs to None (for no-anchor case)
         - If the word has anchors defined:
@@ -810,7 +805,7 @@ def precompute_fitness_vectors(
               - Normalize each vector to unit length (L2 norm = 1)
               - Use np.linalg.norm with axis=1, keepdims=True
               - Add small epsilon (1e-10) to prevent division by zero
-    
+
     Notes:
         - Handle missing words gracefully (skip if not in word_to_idx)
         - Return None for optional components if no valid data available
@@ -874,7 +869,7 @@ def precompute_fitness_vectors(
     return ctx_vecs, ctx_weights, neg_vecs, anchor_vecs
 
 
-def evolve_embedding(word: str, contexts: Dict[str, Counter], 
+def evolve_embedding(word: str, contexts: Dict[str, Counter],
                     embeddings: np.ndarray, word_to_idx: Dict[str, int],
                     vocab_list: List[str], stats_dict: Dict[str, float],
                     anchors: Dict[str, List[str]], config: Dict,
@@ -882,7 +877,7 @@ def evolve_embedding(word: str, contexts: Dict[str, Counter],
                     neg_sampling_probs: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Evolve a single word embedding using (1+λ) Evolution Strategy.
-    
+
     Args:
         word: Target word to insert
         contexts: Context word counts for all target words
@@ -892,20 +887,20 @@ def evolve_embedding(word: str, contexts: Dict[str, Counter],
         stats_dict: Embedding statistics
         anchors: Anchor words for semantic guidance
         config: Configuration dictionary
-    
+
     Returns:
         Optimized embedding vector
     """
     print(f"\n  Evolving: '{word}'", end='')
-    
+
     dim = embeddings.shape[1]
     base_sigma = config['ga_mutation_factor'] * stats_dict['global_std']
     min_sigma_ratio = config.get("ga_min_sigma_ratio", 0.25)
     sigma_decay = config.get("ga_sigma_decay", 0.5)
-    
+
     # Initialize
     best_vec = initialize_embedding(word, contexts, embeddings, word_to_idx, anchors)
-    
+
     # Precompute vectors
     ctx_total = sum(contexts.get(word, {}).values()) if contexts and word in contexts else 0
     num_negatives = config.get("num_negatives", 15)
@@ -959,17 +954,17 @@ def evolve_embedding(word: str, contexts: Dict[str, Counter],
         fitness_weights = dict(config["fitness_weights"])
         if not anchor_list:
             fitness_weights["anchor"] = 0.0
-    
+
     if anchor_mean is not None and ctx_total > 0:
         blend_low = float(config.get("anchor_blend_low", 0.40))
         blend_high = float(config.get("anchor_blend_high", 0.20))
         blend = blend_low if (low_threshold and ctx_total < low_threshold) else blend_high
         best_vec = (1.0 - blend) * best_vec + blend * anchor_mean
-    
+
     # Initial fitness
-    best_fit = compute_fitness(best_vec, word, ctx_vecs, ctx_weights, neg_vecs, 
+    best_fit = compute_fitness(best_vec, word, ctx_vecs, ctx_weights, neg_vecs,
                                anchor_vecs, stats_dict, fitness_weights)
-    
+
     # Evolution loop
     total_gens = max(1, config['ga_generations'])
     sigma_scale = 1.0
@@ -985,19 +980,19 @@ def evolve_embedding(word: str, contexts: Dict[str, Counter],
         # Generate offspring and evaluate
         population = best_vec + np.random.normal(0, mutation_sigma, (config['ga_pop_size'], dim))
         all_candidates = np.vstack([best_vec, population])
-        
-        fitness_scores = [compute_fitness(vec, word, ctx_vecs, ctx_weights, neg_vecs, 
+
+        fitness_scores = [compute_fitness(vec, word, ctx_vecs, ctx_weights, neg_vecs,
                                          anchor_vecs, stats_dict, fitness_weights)
                          for vec in all_candidates]
-        
+
         # Select best
         best_idx = np.argmax(fitness_scores)
         best_vec = all_candidates[best_idx].copy()
         best_fit = fitness_scores[best_idx]
-        
+
         if gen % 50 == 0:
             print(f" G{gen}={best_fit:.4f}", end='')
-    
+
     postprocess = config.get("postprocess_norm", False)
     if postprocess:
         mean_norm = stats_dict.get("mean_norm", None)
@@ -1159,13 +1154,13 @@ def insert_cifar_embeddings(
 def build_task5_embeddings(
     text_source: str = "vg_text.txt",
     base_checkpoint: str = "best_model.pth",
-    output_checkpoint: str = "best_skipgram_523words.pth",
+    output_checkpoint: str = "models/semantic_embeddings.pth",
     dropout: float = 0.1,
     config: Optional[Dict] = None,
     verbose: bool = True,
 ) -> str:
     """
-    Full Task 5 pipeline: load trained Skip-Gram, insert CIFAR-100 words, save checkpoint.
+    Full embedding expansion pipeline: load trained Skip-Gram, insert CIFAR-100 words, save checkpoint.
     """
     if config is None:
         config = {
@@ -1201,11 +1196,11 @@ def build_task5_embeddings(
         }
 
     if verbose:
-        print("\n[STEP 1] Load trained model (lab6)")
+        print("\n[STEP 1] Load trained model ")
     model, embeddings, nodes = load_trained_model_from_checkpoint(base_checkpoint, dropout)
 
     if verbose:
-        print("\n[STEP 2] Insert CIFAR-100 words (lab7)")
+        print("\n[STEP 2] Insert CIFAR-100 words ")
     cifar_vocab = get_cifar100_vocabulary()
     updated_vocab, updated_embeddings = insert_cifar_embeddings(
         embeddings, nodes, cifar_vocab, text_source, config, verbose=verbose
@@ -1217,7 +1212,7 @@ def build_task5_embeddings(
         output_checkpoint,
     )
     if verbose:
-        print(f"\n✓ Saved Task 5 checkpoint: {output_checkpoint}")
+        print(f"\n✓ Saved embedding expansion checkpoint: {output_checkpoint}")
     return output_checkpoint
 
 
@@ -1225,44 +1220,44 @@ def build_task5_embeddings(
 # VISUALIZATION
 # ============================================================================
 
-def visualize_with_inserted_words(nodes: List[str], embeddings: np.ndarray, 
+def visualize_with_inserted_words(nodes: List[str], embeddings: np.ndarray,
                                   inserted_words: List[str],
                                   output_file: str = "embeddings_with_inserted.png",
                                   sample_size: int = 500):
     """Create t-SNE visualization highlighting inserted words."""
     print("\nGenerating t-SNE visualization with inserted words...")
-    
+
     num_original = len(nodes) - len(inserted_words)
     inserted_indices = set(range(num_original, len(nodes)))
-    
+
     # Sample: prioritize inserted words + random original
     if len(nodes) > sample_size:
         sample_indices = list(inserted_indices) + list(np.random.choice(
             num_original, min(sample_size - len(inserted_words), num_original), replace=False))
     else:
         sample_indices = list(range(len(nodes)))
-    
+
     selected_embeddings = embeddings[sample_indices]
     selected_nodes = [nodes[i] for i in sample_indices]
-    
+
     # t-SNE
     tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(sample_indices)-1))
     projection = tsne.fit_transform(selected_embeddings)
-    
+
     # Plot
     plt.figure(figsize=(14, 14))
-    
+
     for i in range(len(projection)):
         is_inserted = sample_indices[i] in inserted_indices
-        plt.scatter(projection[i, 0], projection[i, 1], 
+        plt.scatter(projection[i, 0], projection[i, 1],
                    s=200 if is_inserted else 40,
                    alpha=1.0 if is_inserted else 0.6,
                    c='red' if is_inserted else 'steelblue')
-        plt.annotate(selected_nodes[i], (projection[i, 0], projection[i, 1]), 
+        plt.annotate(selected_nodes[i], (projection[i, 0], projection[i, 1]),
                     fontsize=11 if is_inserted else 9,
                     alpha=1.0 if is_inserted else 0.8,
                     fontweight='bold' if is_inserted else 'normal')
-    
+
     plt.title(f"t-SNE Visualization: {len(sample_indices)} Words "
               f"({sum(1 for i in sample_indices if i in inserted_indices)} Inserted)",
               fontsize=14, fontweight='bold')
@@ -1274,28 +1269,28 @@ def visualize_with_inserted_words(nodes: List[str], embeddings: np.ndarray,
     plt.show()
 
 
-def run_sanity_checks(model: torch.nn.Module, embeddings: np.ndarray, 
+def run_sanity_checks(model: torch.nn.Module, embeddings: np.ndarray,
                      nodes: List[str], word_to_idx: Dict[str, int]):
     """Run comprehensive sanity checks on loaded model and embeddings."""
     print("\n" + "="*70)
     print("SANITY CHECKS")
     print("="*70)
-    
+
     print(f"\n1. Model Configuration:")
     print(f"   Training mode: {model.training}")
     print(f"   Device: {next(model.parameters()).device}")
-    
+
     print(f"\n2. Embedding Quality:")
     print(f"   Shape: {embeddings.shape}")
     print(f"   Mean: {embeddings.mean():.6f}, Std: {embeddings.std():.6f}")
     print(f"   Min: {embeddings.min():.6f}, Max: {embeddings.max():.6f}")
     print(f"   Contains NaN: {np.isnan(embeddings).any()}, Contains Inf: {np.isinf(embeddings).any()}")
-    
+
     norms = np.linalg.norm(embeddings, axis=1)
     print(f"\n3. Embedding Norms:")
     print(f"   Mean: {norms.mean():.4f}, Std: {norms.std():.4f}")
     print(f"   Range: [{norms.min():.4f}, {norms.max():.4f}]")
-    
+
     print(f"\n4. Vocabulary Test:")
     for test_word in ['man', 'woman', 'dog', 'car', 'blue']:
         if test_word in word_to_idx:
@@ -1304,7 +1299,7 @@ def run_sanity_checks(model: torch.nn.Module, embeddings: np.ndarray,
             similar = find_similar_words(test_word, nodes, embeddings, top_k=5)
             if similar:
                 print(f"      Similar: {', '.join([f'{w}({s:.3f})' for w, s in similar])}")
-    
+
     print("\n" + "="*70)
     print("✓ SANITY CHECKS COMPLETE")
     print("="*70)
@@ -1317,7 +1312,7 @@ Don't forget to add tests!!!!
 
 def run_tests():
     """Run all unit tests."""
-    class Lab7Tests(unittest.TestCase):
+    class EmbeddingExpansionTests(unittest.TestCase):
         def test_extract_word_contexts(self):
             with tempfile.NamedTemporaryFile(mode="w", delete=False) as tf:
                 tf.write("cat dog cat mouse\n")
@@ -1363,11 +1358,11 @@ def run_tests():
             self.assertEqual(neg_vecs.shape[1], 3)
             self.assertEqual(anchor_vecs.shape[1], 3)
 
-    suite = unittest.TestLoader().loadTestsFromTestCase(Lab7Tests)
+    suite = unittest.TestLoader().loadTestsFromTestCase(EmbeddingExpansionTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return result.wasSuccessful()
 
 
 if __name__ == "__main__":
     success = run_tests()
-    exit(0 if success else 1)    
+    exit(0 if success else 1)
