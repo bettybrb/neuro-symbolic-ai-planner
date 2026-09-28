@@ -25,9 +25,9 @@ def load_semantic_embeddings(
     checkpoint_path: str = str(REPO_ROOT / "models" / "semantic_embeddings.pth"),
 ) -> Tuple[Dict[str, int], np.ndarray]:
     """
-    Load and return your trained Skip-gram embeddings.
+    Load the trained Skip-Gram embedding matrix and vocabulary.
 
-    This function serves as the entry point for loading your final embedding model
+    This function loads the semantic embedding checkpoint
     that contains all Visual Genome words AND all 100 CIFAR-100 classes.
     """
     path = Path(checkpoint_path)
